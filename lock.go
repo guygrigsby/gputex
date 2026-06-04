@@ -51,6 +51,23 @@ func acquire(gpu string) (*os.File, error) {
 	return f, nil
 }
 
+// acquireQueue is acquire's blocking sibling: it takes the same exclusive
+// advisory lock but, lacking LOCK_NB, sleeps inside the syscall until the lock
+// is granted (the holder releases or dies). The kernel owns the wait queue, so
+// a queued process that is killed or Ctrl-C'd is simply dropped from it — same
+// zero-state, auto-release story as acquire, extended to waiting.
+func acquireQueue(gpu string) (*os.File, error) {
+	f, err := os.OpenFile(lockPath(gpu), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
 func release(f *os.File) {
 	if f == nil {
 		return

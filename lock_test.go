@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // isolate ~/.gputex into a temp dir so tests never touch real locks.
@@ -40,6 +41,47 @@ func TestAcquireBusyRelease(t *testing.T) {
 		t.Fatalf("re-acquire after release: %v", err)
 	}
 	release(f2)
+}
+
+// --queue blocks in LOCK_EX until the holder releases, then proceeds.
+func TestQueueBlocksUntilRelease(t *testing.T) {
+	isolate(t)
+	gpu := "test"
+
+	f1, err := acquire(gpu)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	got := make(chan *os.File, 1)
+	go func() {
+		f, err := acquireQueue(gpu) // must block while f1 holds the lock
+		if err != nil {
+			t.Errorf("acquireQueue: %v", err)
+			got <- nil
+			return
+		}
+		got <- f
+	}()
+
+	// while we hold the lock, the queued waiter must not proceed
+	select {
+	case <-got:
+		t.Fatal("acquireQueue returned while lock held; want it to block")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	release(f1)
+
+	select {
+	case f := <-got:
+		if f == nil {
+			t.Fatal("acquireQueue failed")
+		}
+		release(f)
+	case <-time.After(2 * time.Second):
+		t.Fatal("acquireQueue did not unblock within 2s of release")
+	}
 }
 
 func TestHolderRoundTrip(t *testing.T) {

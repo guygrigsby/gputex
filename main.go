@@ -18,8 +18,10 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
-  gputex run    [--gpu ID] [--wait S] "<label>" -- <cmd...>   acquire, run, release
-  gputex status [--gpu ID]                                    free / busy + holder
+  gputex run    [--gpu ID] [--wait S | --queue] "<label>" -- <cmd...>   acquire, run, release
+  gputex status [--gpu ID]                                             free / busy + holder
+  --wait S   poll up to S seconds, then exit 75 if still busy
+  --queue    block until it's our turn (waits forever; unqueues on exit/crash)
 exit: 0 ok, 75 GPU busy, 1 error, 2 usage`)
 	os.Exit(2)
 }
@@ -39,7 +41,7 @@ func main() {
 }
 
 func runCmd(args []string) {
-	gpu, wait, label, cmd := "default", 0, "", []string(nil)
+	gpu, wait, queue, label, cmd := "default", 0, false, "", []string(nil)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -56,6 +58,8 @@ func runCmd(args []string) {
 			wait, _ = strconv.Atoi(arg(args, i))
 		case strings.HasPrefix(a, "--wait="):
 			wait, _ = strconv.Atoi(a[len("--wait="):])
+		case a == "--queue":
+			queue = true
 		case label == "":
 			label = a
 		}
@@ -64,7 +68,7 @@ func runCmd(args []string) {
 		usage()
 	}
 
-	f := mustAcquire(gpu, wait, label)
+	f := mustAcquire(gpu, wait, queue)
 	defer release(f)
 
 	host, _ := os.Hostname()
@@ -96,7 +100,16 @@ func runCmd(args []string) {
 	}
 }
 
-func mustAcquire(gpu string, wait int, label string) *os.File {
+func mustAcquire(gpu string, wait int, queue bool) *os.File {
+	// --queue: block in the kernel until it's our turn (waits forever, ignores --wait).
+	if queue {
+		f, err := acquireQueue(gpu)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gputex:", err)
+			os.Exit(1)
+		}
+		return f
+	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
 	for {
 		f, err := acquire(gpu)

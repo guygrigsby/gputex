@@ -4,19 +4,27 @@ A dead-simple single-GPU advisory mutex. Wrap any GPU job so two never stack on 
 which panics Macs (Metal) and OOMs an 8GB CUDA box.
 
 ```
-gputex run    [--gpu ID] [--wait S] "<label>" -- <cmd...>
+gputex run    [--gpu ID] [--wait S | --queue] "<label>" -- <cmd...>
 gputex status [--gpu ID]
 ```
 
 `run` takes an exclusive `flock` on `~/.gputex/<gpu>.lock`, records the holder, runs your command,
 and releases on exit — **including crashes**: the OS drops the lock when the holding process dies, so
 there is never a stale lock to clean up. A second `run` while the card is busy exits **75** and prints
-who holds it. `--wait S` blocks up to S seconds first.
+who holds it.
+
+On a busy card you have two ways to wait instead of failing:
+
+- `--wait S` polls for up to S seconds, then gives up with exit 75.
+- `--queue` blocks in the kernel until it's your turn (waits forever, FIFO-ish). The wait queue is the
+  kernel's, so a queued job that's killed or Ctrl-C'd is simply dropped from it — same auto-release
+  story as a running holder, no stale queue state.
 
 ## Examples
 
 ```sh
 gputex run "kohya-train" -- bash 03_train.sh
+gputex run --queue "kohya-train" -- bash 03_train.sh             # wait for the card instead of exiting 75
 tmux new-session "gputex run 'comfyui' -- bash start-comfy.sh"   # daemon holds the lock for its life
 ssh rig 'gputex run "comfyui" -- bash start-comfy.sh'            # coordinate the rig card remotely
 gputex status                                                    # FREE / BUSY + holder
