@@ -1,0 +1,5 @@
+# built binaries
+/gputex
+/gputex-darwin-*
+/gputex-linux-*
+*.test
