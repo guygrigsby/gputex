@@ -18,10 +18,11 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
-  gputex run    [--gpu ID] [--wait S | --queue] "<label>" -- <cmd...>   acquire, run, release
+  gputex run    [--gpu ID] [--wait S | --queue | --preempt] "<label>" -- <cmd...>   acquire, run, release
   gputex status [--gpu ID]                                             free / busy + holder
   --wait S   poll up to S seconds, then exit 75 if still busy
   --queue    block until it's our turn (waits forever; unqueues on exit/crash)
+  --preempt  kill the current holder (TERM then KILL) and take the lock (same host only)
 exit: 0 ok, 75 GPU busy, 1 error, 2 usage`)
 	os.Exit(2)
 }
@@ -41,7 +42,7 @@ func main() {
 }
 
 func runCmd(args []string) {
-	gpu, wait, queue, label, cmd := "default", 0, false, "", []string(nil)
+	gpu, wait, queue, preemptF, label, cmd := "default", 0, false, false, "", []string(nil)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -60,6 +61,8 @@ func runCmd(args []string) {
 			wait, _ = strconv.Atoi(a[len("--wait="):])
 		case a == "--queue":
 			queue = true
+		case a == "--preempt":
+			preemptF = true
 		case label == "":
 			label = a
 		}
@@ -68,7 +71,7 @@ func runCmd(args []string) {
 		usage()
 	}
 
-	f := mustAcquire(gpu, wait, queue)
+	f := mustAcquire(gpu, wait, queue, preemptF)
 	defer release(f)
 
 	host, _ := os.Hostname()
@@ -100,7 +103,16 @@ func runCmd(args []string) {
 	}
 }
 
-func mustAcquire(gpu string, wait int, queue bool) *os.File {
+func mustAcquire(gpu string, wait int, queue, preemptF bool) *os.File {
+	// --preempt: kick out the current holder and take the lock.
+	if preemptF {
+		f, err := preempt(gpu)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gputex:", err)
+			os.Exit(1)
+		}
+		return f
+	}
 	// --queue: block in the kernel until it's our turn (waits forever, ignores --wait).
 	if queue {
 		f, err := acquireQueue(gpu)

@@ -4,7 +4,7 @@ A dead-simple single-GPU advisory mutex. Wrap any GPU job so two never stack on 
 which panics Macs (Metal) and OOMs an 8GB CUDA box.
 
 ```
-gputex run    [--gpu ID] [--wait S | --queue] "<label>" -- <cmd...>
+gputex run    [--gpu ID] [--wait S | --queue | --preempt] "<label>" -- <cmd...>
 gputex status [--gpu ID]
 ```
 
@@ -19,6 +19,12 @@ On a busy card you have two ways to wait instead of failing:
 - `--queue` blocks in the kernel until it's your turn (waits forever, FIFO-ish). The wait queue is the
   kernel's, so a queued job that's killed or Ctrl-C'd is simply dropped from it — same auto-release
   story as a running holder, no stale queue state.
+
+Or take the card by force:
+
+- `--preempt` signals the current holder (`SIGTERM`, then `SIGKILL` after a ~10s grace) and grabs the
+  lock once it dies. Only works for a holder on the same host — a remote PID isn't ours to signal, so
+  it refuses rather than guess.
 
 ## Examples
 

@@ -110,4 +110,27 @@ func TestStatusClearsStaleHolder(t *testing.T) {
 	}
 }
 
+func TestPreemptFreeTakesIt(t *testing.T) {
+	isolate(t)
+	f, err := preempt("test") // nothing held: should just acquire
+	if err != nil {
+		t.Fatalf("preempt on free lock: %v", err)
+	}
+	release(f)
+}
+
+func TestPreemptRefusesCrossHost(t *testing.T) {
+	isolate(t)
+	gpu := "test"
+	hold, err := acquire(gpu) // keep it busy so preempt reaches the holder check
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release(hold)
+	_ = writeHolder(gpu, Holder{Label: "remote", PID: 4242, Host: "some-other-host"})
+	if _, err := preempt(gpu); err == nil {
+		t.Fatal("preempt: want refusal for cross-host holder, got nil")
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(m.Run()) }

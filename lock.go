@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // ErrBusy is returned by acquire when the GPU lock is already held.
@@ -66,6 +68,36 @@ func acquireQueue(gpu string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// preempt kicks out the current holder, then blocks until the lock is ours.
+// SIGTERM (gputex run forwards it to the child for a clean stop); if the holder
+// is still alive after the grace period, SIGKILL. Only works for a holder on
+// this host — a remote PID isn't ours to signal, so we refuse.
+func preempt(gpu string) (*os.File, error) {
+	// Fast path: already free.
+	if f, err := acquire(gpu); err == nil {
+		return f, nil
+	} else if !errors.Is(err, ErrBusy) {
+		return nil, err
+	}
+	h, ok := readHolder(gpu)
+	if !ok || h.PID <= 0 {
+		return nil, errors.New("GPU busy but holder unknown — can't preempt")
+	}
+	host, _ := os.Hostname()
+	if h.Host != host {
+		return nil, fmt.Errorf("held by pid %d on %s — can't preempt across hosts", h.PID, h.Host)
+	}
+	_ = syscall.Kill(h.PID, syscall.SIGTERM)
+	for range 100 { // ~10s grace
+		if f, err := acquire(gpu); err == nil {
+			return f, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = syscall.Kill(h.PID, syscall.SIGKILL)
+	return acquireQueue(gpu) // block until the dead holder's lock frees
 }
 
 func release(f *os.File) {
