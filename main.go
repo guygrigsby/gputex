@@ -23,8 +23,8 @@ func usage() {
   --wait S   poll up to S seconds, then exit 75 if still busy
   --queue    block until it's our turn (waits forever; unqueues on exit/crash)
   --preempt  kill the current holder (TERM then KILL) and take the lock (same host only)
-  --low      run as a lowest-priority, preemptible holder: yield to every other
-             job (block till free), and let any normal job auto-preempt you
+  --low      run as a shared, lowest-priority holder: many --low jobs share the
+             card, all yield to (and are evicted by) any normal exclusive job
 exit: 0 ok, 75 GPU busy, 1 error, 2 usage`)
 	os.Exit(2)
 }
@@ -79,12 +79,12 @@ func runCmd(args []string) {
 	defer release(f)
 
 	host, _ := os.Hostname()
-	_ = writeHolder(gpu, Holder{
+	_ = addHolder(gpu, Holder{
 		Label: label, PID: os.Getpid(), Host: host,
 		Started: time.Now().Format(time.RFC3339), Cmd: strings.Join(cmd, " "),
 		Preemptible: low,
 	})
-	defer clearHolder(gpu)
+	defer removeHolder(gpu, os.Getpid())
 
 	c := exec.Command(cmd[0], cmd[1:]...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -112,30 +112,24 @@ func runCmd(args []string) {
 }
 
 func mustAcquire(gpu string, wait int, queue, preemptF, low bool) *os.File {
-	// --preempt: kick out the current holder and take the lock.
-	if preemptF {
-		f, err := preempt(gpu)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "gputex:", err)
-			os.Exit(1)
-		}
-		return f
-	}
-	// --low: a lowest-priority, preemptible holder (e.g. ComfyUI). We never
-	// preempt — we yield to everyone — so just block until the card is free,
-	// then hold it until a normal job preempts us (Preemptible is written by
-	// the caller so that auto-preempt below can find us).
+	// --low: a shared, lowest-priority holder (ComfyUI, llama-swap). Coexists
+	// with other --low holders; blocks while an exclusive (training) holder has
+	// the card. We never preempt — we yield to everyone.
 	if low {
-		f, err := acquireQueue(gpu)
+		return must(acquireShared(gpu))
+	}
+
+	// --preempt: evict every current holder and take the card by force.
+	if preemptF {
+		f, err := preempt(gpu, listHolders(gpu))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "gputex:", err)
 			os.Exit(1)
 		}
 		return f
 	}
-	// Normal job. Try once; if the card is held by a preemptible (--low) holder,
-	// kick it out — a normal job always beats a low one — without disturbing
-	// another normal holder.
+
+	// Normal (exclusive) job. Try once.
 	f, err := acquire(gpu)
 	if err == nil {
 		return f
@@ -144,22 +138,20 @@ func mustAcquire(gpu string, wait int, queue, preemptF, low bool) *os.File {
 		fmt.Fprintln(os.Stderr, "gputex:", err)
 		os.Exit(1)
 	}
-	if h, ok := readHolder(gpu); ok && h.Preemptible {
-		pf, err := preempt(gpu)
+	// Busy. If every holder is preemptible (--low), evict them all — a normal job
+	// always beats low ones. If any normal holder is present, don't touch it.
+	holders := listHolders(gpu)
+	if len(holders) > 0 && allPreemptible(holders) {
+		pf, err := preempt(gpu, holders)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "gputex:", err)
 			os.Exit(1)
 		}
 		return pf
 	}
-	// Held by a normal job: honor --queue / --wait / plain.
+	// Held by another normal job (or an unregistered holder): honor --queue / --wait / plain.
 	if queue {
-		qf, err := acquireQueue(gpu)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "gputex:", err)
-			os.Exit(1)
-		}
-		return qf
+		return must(acquireQueue(gpu))
 	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
 	for {
@@ -172,13 +164,38 @@ func mustAcquire(gpu string, wait int, queue, preemptF, low bool) *os.File {
 			os.Exit(1)
 		}
 		if wait <= 0 || time.Now().After(deadline) {
-			h, _ := readHolder(gpu)
-			fmt.Fprintf(os.Stderr, "gputex: GPU %q busy — held by %q (pid %d on %s, since %s)\n",
-				gpu, h.Label, h.PID, h.Host, h.Started)
-			os.Exit(75)
+			busyExit(gpu)
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+func must(f *os.File, err error) *os.File {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gputex:", err)
+		os.Exit(1)
+	}
+	return f
+}
+
+func allPreemptible(holders []Holder) bool {
+	for _, h := range holders {
+		if !h.Preemptible {
+			return false
+		}
+	}
+	return true
+}
+
+func busyExit(gpu string) {
+	h := listHolders(gpu)
+	if len(h) > 0 {
+		fmt.Fprintf(os.Stderr, "gputex: GPU %q busy — held by %q (pid %d on %s, since %s)\n",
+			gpu, h[0].Label, h[0].PID, h[0].Host, h[0].Started)
+	} else {
+		fmt.Fprintf(os.Stderr, "gputex: GPU %q busy\n", gpu)
+	}
+	os.Exit(75)
 }
 
 func statusCmd(args []string) {
@@ -191,10 +208,21 @@ func statusCmd(args []string) {
 			gpu = args[i][len("--gpu="):]
 		}
 	}
-	if held, h := status(gpu); held {
-		fmt.Printf("BUSY  %s — %q (pid %d on %s, since %s)\n", gpu, h.Label, h.PID, h.Host, h.Started)
-	} else {
+	held, holders := status(gpu)
+	if !held {
 		fmt.Printf("FREE  %s\n", gpu)
+		return
+	}
+	if len(holders) == 0 {
+		fmt.Printf("BUSY  %s — holder not yet registered\n", gpu)
+		return
+	}
+	for _, h := range holders {
+		kind := "exclusive"
+		if h.Preemptible {
+			kind = "low"
+		}
+		fmt.Printf("BUSY  %s — %q (%s, pid %d on %s, since %s)\n", gpu, h.Label, kind, h.PID, h.Host, h.Started)
 	}
 }
 

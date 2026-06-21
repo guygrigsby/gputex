@@ -28,10 +28,13 @@ Or take the card by force:
 
 Or run at the bottom of the pile:
 
-- `--low` marks a **preemptible, lowest-priority holder** (e.g. an always-on ComfyUI sharing a training
-  card). It yields to everyone — blocks until the card is free like `--queue`, and never preempts — but
-  any *normal* job auto-preempts it on acquire, no `--preempt` needed. Two normal jobs still queue/refuse
-  against each other, so a low holder gives the card up on demand without a trainer ever killing a trainer.
+- `--low` marks a **shared, lowest-priority holder** (e.g. an always-on ComfyUI and llama-swap sharing a
+  training card). Normal jobs take an exclusive lock (`LOCK_EX`); `--low` jobs take a shared one
+  (`LOCK_SH`), so **several `--low` holders coexist on the card at once**. They all yield to a normal job:
+  any normal acquire evicts *every* low holder (SIGTERM, then SIGKILL after a ~10s grace) and takes the
+  card exclusively — no `--preempt` needed. Two normal jobs still queue/refuse against each other, so the
+  light services give the card up on demand without a trainer ever killing a trainer. A `--low` job blocks
+  while a normal holder has the card, so it simply waits out training and resumes after.
 
 ## Examples
 

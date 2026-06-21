@@ -19,6 +19,13 @@ func buildGputex(t *testing.T) string {
 	return bin
 }
 
+// registered reports whether at least one holder is recorded under home's
+// gputex registry for gpu.
+func registered(home, gpu string) bool {
+	ents, err := os.ReadDir(filepath.Join(home, ".gputex", gpu+".holders"))
+	return err == nil && len(ents) > 0
+}
+
 func waitFor(t *testing.T, cond func() bool, d time.Duration, what string) {
 	t.Helper()
 	deadline := time.Now().Add(d)
@@ -46,8 +53,7 @@ func TestQueuedWaiterCancelsOnSignal(t *testing.T) {
 	}
 	defer holder.Process.Kill()
 
-	holderFile := filepath.Join(home, ".gputex", gpu+".holder")
-	waitFor(t, func() bool { _, err := os.Stat(holderFile); return err == nil }, 3*time.Second, "holder to take the lock")
+	waitFor(t, func() bool { return registered(home, gpu) }, 3*time.Second, "holder to take the lock")
 
 	marker := filepath.Join(t.TempDir(), "ran")
 	waiter := exec.Command(bin, "run", "waiter", "--gpu", gpu, "--queue", "--", "touch", marker)
@@ -102,8 +108,7 @@ func TestNormalJobPreemptsLowHolder(t *testing.T) {
 	lowDone := make(chan error, 1)
 	go func() { lowDone <- low.Wait() }()
 
-	holderFile := filepath.Join(home, ".gputex", gpu+".holder")
-	waitFor(t, func() bool { _, err := os.Stat(holderFile); return err == nil }, 3*time.Second, "low holder to take the lock")
+	waitFor(t, func() bool { return registered(home, gpu) }, 3*time.Second, "low holder to take the lock")
 
 	// A plain normal job (no --queue/--preempt) must NOT exit 75 here — it should
 	// preempt the low holder and run its command.
@@ -122,5 +127,52 @@ func TestNormalJobPreemptsLowHolder(t *testing.T) {
 	case <-lowDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("low holder still alive after a normal job took the card; want it preempted")
+	}
+}
+
+// The coexist money-path: two --low holders share the card at once, and a single
+// normal job evicts BOTH and takes it exclusively (ComfyUI + llama-swap yielding
+// the R9700 to training).
+func TestNormalJobEvictsAllLowHolders(t *testing.T) {
+	bin := buildGputex(t)
+	home := t.TempDir()
+	env := append(os.Environ(), "HOME="+home)
+	gpu := "test"
+
+	starts := make([]*exec.Cmd, 2)
+	dones := make([]chan error, 2)
+	for i, name := range []string{"comfyui", "llama-swap"} {
+		c := exec.Command(bin, "run", name, "--gpu", gpu, "--low", "--", "sleep", "30")
+		c.Env = env
+		if err := c.Start(); err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		defer c.Process.Kill()
+		d := make(chan error, 1)
+		go func(c *exec.Cmd) { d <- c.Wait() }(c)
+		starts[i], dones[i] = c, d
+	}
+
+	// both low holders must register and coexist (shared lock)
+	waitFor(t, func() bool {
+		ents, _ := os.ReadDir(filepath.Join(home, ".gputex", gpu+".holders"))
+		return len(ents) == 2
+	}, 3*time.Second, "two low holders to share the card")
+
+	marker := filepath.Join(t.TempDir(), "ran")
+	trainer := exec.Command(bin, "run", "trainer", "--gpu", gpu, "--", "touch", marker)
+	trainer.Env = env
+	if out, err := trainer.CombinedOutput(); err != nil {
+		t.Fatalf("trainer should evict both low holders and run; err=%v out=%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("trainer did not run after evicting the low holders")
+	}
+	for i := range dones {
+		select {
+		case <-dones[i]:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("low holder %d still alive after eviction", i)
+		}
 	}
 }

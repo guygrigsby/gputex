@@ -87,13 +87,24 @@ func TestQueueBlocksUntilRelease(t *testing.T) {
 func TestHolderRoundTrip(t *testing.T) {
 	isolate(t)
 	gpu := "test"
-	want := Holder{Label: "kohya-train", PID: 4242, Host: "rig", Started: "now", Cmd: "bash 03_train.sh"}
-	if err := writeHolder(gpu, want); err != nil {
+	// PID must be a live process or listHolders prunes it; use our own.
+	want := Holder{Label: "kohya-train", PID: os.Getpid(), Host: "rig", Started: "now", Cmd: "bash 03_train.sh", Preemptible: true}
+	if err := addHolder(gpu, want); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := readHolder(gpu)
-	if !ok || got.Label != want.Label || got.PID != want.PID || got.Cmd != want.Cmd {
-		t.Fatalf("roundtrip: got %+v ok=%v", got, ok)
+	got := listHolders(gpu)
+	if len(got) != 1 || got[0].Label != want.Label || got[0].PID != want.PID || got[0].Cmd != want.Cmd || !got[0].Preemptible {
+		t.Fatalf("roundtrip: got %+v", got)
+	}
+}
+
+func TestListHoldersPrunesDead(t *testing.T) {
+	isolate(t)
+	gpu := "test"
+	// a registry entry for a dead PID must be pruned on read
+	_ = addHolder(gpu, Holder{Label: "ghost", PID: 999999})
+	if h := listHolders(gpu); len(h) != 0 {
+		t.Fatalf("want dead holder pruned, got %+v", h)
 	}
 }
 
@@ -101,18 +112,18 @@ func TestStatusClearsStaleHolder(t *testing.T) {
 	isolate(t)
 	gpu := "test"
 	// a holder file with no lock held = stale; status (free) should clear it
-	_ = writeHolder(gpu, Holder{Label: "ghost", PID: 999999})
+	_ = addHolder(gpu, Holder{Label: "ghost", PID: os.Getpid()})
 	if held, _ := status(gpu); held {
 		t.Fatal("status: want free (lock not held), got held")
 	}
-	if _, ok := readHolder(gpu); ok {
+	if h := listHolders(gpu); len(h) != 0 {
 		t.Fatal("stale holder file should have been cleared")
 	}
 }
 
 func TestPreemptFreeTakesIt(t *testing.T) {
 	isolate(t)
-	f, err := preempt("test") // nothing held: should just acquire
+	f, err := preempt("test", nil) // nothing held: should just acquire
 	if err != nil {
 		t.Fatalf("preempt on free lock: %v", err)
 	}
@@ -127,9 +138,36 @@ func TestPreemptRefusesCrossHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release(hold)
-	_ = writeHolder(gpu, Holder{Label: "remote", PID: 4242, Host: "some-other-host"})
-	if _, err := preempt(gpu); err == nil {
+	// live PID (so listHolders keeps it) but a different host — can't signal it
+	_ = addHolder(gpu, Holder{Label: "remote", PID: os.Getpid(), Host: "some-other-host"})
+	if _, err := preempt(gpu, listHolders(gpu)); err == nil {
 		t.Fatal("preempt: want refusal for cross-host holder, got nil")
+	}
+}
+
+func TestSharedHoldersCoexist(t *testing.T) {
+	isolate(t)
+	gpu := "test"
+	a, err := acquireShared(gpu)
+	if err != nil {
+		t.Fatalf("first shared: %v", err)
+	}
+	defer release(a)
+	// a second shared lock must be granted alongside the first (readers coexist)
+	got := make(chan *os.File, 1)
+	go func() { f, _ := acquireShared(gpu); got <- f }()
+	select {
+	case f := <-got:
+		if f == nil {
+			t.Fatal("second shared acquire failed")
+		}
+		release(f)
+	case <-time.After(time.Second):
+		t.Fatal("second shared lock blocked; readers should coexist")
+	}
+	// but an exclusive (non-blocking) acquire must see the card busy
+	if _, err := acquire(gpu); err != ErrBusy {
+		t.Fatalf("exclusive over shared: want ErrBusy, got %v", err)
 	}
 }
 
