@@ -20,6 +20,10 @@ type Holder struct {
 	Host    string `json:"host"`
 	Started string `json:"started"`
 	Cmd     string `json:"cmd"`
+	// Preemptible marks a lowest-priority holder (gputex run --low, e.g. ComfyUI):
+	// a normal job auto-preempts it instead of queueing/refusing, so the card
+	// frees on demand without killing other normal jobs.
+	Preemptible bool `json:"preemptible,omitempty"`
 }
 
 func dir() string {

@@ -83,3 +83,44 @@ func TestQueuedWaiterCancelsOnSignal(t *testing.T) {
 		t.Fatal("waiter ran its command despite being cancelled while queued")
 	}
 }
+
+// A --low (preemptible) holder must yield to a normal job: the normal job takes
+// the card by auto-preempting it (no --preempt flag needed) and runs, while the
+// low holder is terminated. This is how ComfyUI gives the R9700 back to training.
+func TestNormalJobPreemptsLowHolder(t *testing.T) {
+	bin := buildGputex(t)
+	home := t.TempDir()
+	env := append(os.Environ(), "HOME="+home)
+	gpu := "test"
+
+	low := exec.Command(bin, "run", "comfyui", "--gpu", gpu, "--low", "--", "sleep", "30")
+	low.Env = env
+	if err := low.Start(); err != nil {
+		t.Fatalf("start low holder: %v", err)
+	}
+	defer low.Process.Kill()
+	lowDone := make(chan error, 1)
+	go func() { lowDone <- low.Wait() }()
+
+	holderFile := filepath.Join(home, ".gputex", gpu+".holder")
+	waitFor(t, func() bool { _, err := os.Stat(holderFile); return err == nil }, 3*time.Second, "low holder to take the lock")
+
+	// A plain normal job (no --queue/--preempt) must NOT exit 75 here — it should
+	// preempt the low holder and run its command.
+	marker := filepath.Join(t.TempDir(), "ran")
+	trainer := exec.Command(bin, "run", "trainer", "--gpu", gpu, "--", "touch", marker)
+	trainer.Env = env
+	if out, err := trainer.CombinedOutput(); err != nil {
+		t.Fatalf("trainer should preempt the low holder and run; got err=%v out=%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("trainer did not run its command after preempting the low holder")
+	}
+
+	// The low holder must have been terminated (it yielded the card).
+	select {
+	case <-lowDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("low holder still alive after a normal job took the card; want it preempted")
+	}
+}

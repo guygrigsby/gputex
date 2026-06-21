@@ -26,6 +26,13 @@ Or take the card by force:
   lock once it dies. Only works for a holder on the same host — a remote PID isn't ours to signal, so
   it refuses rather than guess.
 
+Or run at the bottom of the pile:
+
+- `--low` marks a **preemptible, lowest-priority holder** (e.g. an always-on ComfyUI sharing a training
+  card). It yields to everyone — blocks until the card is free like `--queue`, and never preempts — but
+  any *normal* job auto-preempts it on acquire, no `--preempt` needed. Two normal jobs still queue/refuse
+  against each other, so a low holder gives the card up on demand without a trainer ever killing a trainer.
+
 ## Examples
 
 ```sh

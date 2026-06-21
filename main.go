@@ -18,11 +18,13 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
-  gputex run    [--gpu ID] [--wait S | --queue | --preempt] "<label>" -- <cmd...>   acquire, run, release
+  gputex run    [--gpu ID] [--wait S | --queue | --preempt | --low] "<label>" -- <cmd...>   acquire, run, release
   gputex status [--gpu ID]                                             free / busy + holder
   --wait S   poll up to S seconds, then exit 75 if still busy
   --queue    block until it's our turn (waits forever; unqueues on exit/crash)
   --preempt  kill the current holder (TERM then KILL) and take the lock (same host only)
+  --low      run as a lowest-priority, preemptible holder: yield to every other
+             job (block till free), and let any normal job auto-preempt you
 exit: 0 ok, 75 GPU busy, 1 error, 2 usage`)
 	os.Exit(2)
 }
@@ -42,7 +44,7 @@ func main() {
 }
 
 func runCmd(args []string) {
-	gpu, wait, queue, preemptF, label, cmd := "default", 0, false, false, "", []string(nil)
+	gpu, wait, queue, preemptF, low, label, cmd := "default", 0, false, false, false, "", []string(nil)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -63,6 +65,8 @@ func runCmd(args []string) {
 			queue = true
 		case a == "--preempt":
 			preemptF = true
+		case a == "--low":
+			low = true
 		case label == "":
 			label = a
 		}
@@ -71,11 +75,15 @@ func runCmd(args []string) {
 		usage()
 	}
 
-	f := mustAcquire(gpu, wait, queue, preemptF)
+	f := mustAcquire(gpu, wait, queue, preemptF, low)
 	defer release(f)
 
 	host, _ := os.Hostname()
-	_ = writeHolder(gpu, Holder{label, os.Getpid(), host, time.Now().Format(time.RFC3339), strings.Join(cmd, " ")})
+	_ = writeHolder(gpu, Holder{
+		Label: label, PID: os.Getpid(), Host: host,
+		Started: time.Now().Format(time.RFC3339), Cmd: strings.Join(cmd, " "),
+		Preemptible: low,
+	})
 	defer clearHolder(gpu)
 
 	c := exec.Command(cmd[0], cmd[1:]...)
@@ -103,7 +111,7 @@ func runCmd(args []string) {
 	}
 }
 
-func mustAcquire(gpu string, wait int, queue, preemptF bool) *os.File {
+func mustAcquire(gpu string, wait int, queue, preemptF, low bool) *os.File {
 	// --preempt: kick out the current holder and take the lock.
 	if preemptF {
 		f, err := preempt(gpu)
@@ -113,14 +121,45 @@ func mustAcquire(gpu string, wait int, queue, preemptF bool) *os.File {
 		}
 		return f
 	}
-	// --queue: block in the kernel until it's our turn (waits forever, ignores --wait).
-	if queue {
+	// --low: a lowest-priority, preemptible holder (e.g. ComfyUI). We never
+	// preempt — we yield to everyone — so just block until the card is free,
+	// then hold it until a normal job preempts us (Preemptible is written by
+	// the caller so that auto-preempt below can find us).
+	if low {
 		f, err := acquireQueue(gpu)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "gputex:", err)
 			os.Exit(1)
 		}
 		return f
+	}
+	// Normal job. Try once; if the card is held by a preemptible (--low) holder,
+	// kick it out — a normal job always beats a low one — without disturbing
+	// another normal holder.
+	f, err := acquire(gpu)
+	if err == nil {
+		return f
+	}
+	if err != ErrBusy {
+		fmt.Fprintln(os.Stderr, "gputex:", err)
+		os.Exit(1)
+	}
+	if h, ok := readHolder(gpu); ok && h.Preemptible {
+		pf, err := preempt(gpu)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gputex:", err)
+			os.Exit(1)
+		}
+		return pf
+	}
+	// Held by a normal job: honor --queue / --wait / plain.
+	if queue {
+		qf, err := acquireQueue(gpu)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gputex:", err)
+			os.Exit(1)
+		}
+		return qf
 	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
 	for {
