@@ -199,15 +199,38 @@ func busyExit(gpu string) {
 }
 
 func statusCmd(args []string) {
-	gpu := "default"
+	gpu, explicit := "default", false
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--gpu" {
 			i++
 			gpu = arg(args, i)
+			explicit = true
 		} else if strings.HasPrefix(args[i], "--gpu=") {
 			gpu = args[i][len("--gpu="):]
+			explicit = true
 		}
 	}
+	if explicit {
+		printStatus(gpu)
+		return
+	}
+	// no --gpu: report every GPU that has a lock file
+	ents, _ := os.ReadDir(dir())
+	var gpus []string
+	for _, e := range ents {
+		if g, ok := strings.CutSuffix(e.Name(), ".lock"); ok {
+			gpus = append(gpus, g)
+		}
+	}
+	if len(gpus) == 0 {
+		gpus = []string{"default"}
+	}
+	for _, g := range gpus {
+		printStatus(g)
+	}
+}
+
+func printStatus(gpu string) {
 	held, holders := status(gpu)
 	if !held {
 		fmt.Printf("FREE  %s\n", gpu)
