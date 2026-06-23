@@ -2,7 +2,7 @@
 // stack on one card (Mac Metal, rig CUDA). The lock auto-releases on exit/crash.
 //
 //	gputex run    [--gpu ID] [--wait S] "<label>" -- <cmd...>
-//	gputex status [--gpu ID]
+//	gputex status [--gpu ID]   omit --gpu to show all known GPUs
 package main
 
 import (
@@ -19,7 +19,7 @@ import (
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
   gputex run    [--gpu ID] [--wait S | --queue | --preempt | --low] "<label>" -- <cmd...>   acquire, run, release
-  gputex status [--gpu ID]                                             free / busy + holder
+  gputex status [--gpu ID]   omit --gpu to list all known GPUs        free / busy + holder
   --wait S   poll up to S seconds, then exit 75 if still busy
   --queue    block until it's our turn (waits forever; unqueues on exit/crash)
   --preempt  kill the current holder (TERM then KILL) and take the lock (same host only)
