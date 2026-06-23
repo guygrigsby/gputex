@@ -2,7 +2,7 @@
 // stack on one card (Mac Metal, rig CUDA). The lock auto-releases on exit/crash.
 //
 //	gputex run    [--gpu ID] [--wait S] "<label>" -- <cmd...>
-//	gputex status [--gpu ID]   omit --gpu to show all known GPUs
+//	gputex status [--gpu ID]   omit --gpu to show all GPUs in ~/.gputex/gpus
 package main
 
 import (
@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,7 +20,8 @@ import (
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
   gputex run    [--gpu ID] [--wait S | --queue | --preempt | --low] "<label>" -- <cmd...>   acquire, run, release
-  gputex status [--gpu ID]   omit --gpu to list all known GPUs        free / busy + holder
+  gputex status [--gpu ID]   omit --gpu to list all GPUs in ~/.gputex/gpus (one per line)
+                             free / busy + holder
   --wait S   poll up to S seconds, then exit 75 if still busy
   --queue    block until it's our turn (waits forever; unqueues on exit/crash)
   --preempt  kill the current holder (TERM then KILL) and take the lock (same host only)
@@ -214,7 +216,26 @@ func statusCmd(args []string) {
 		printStatus(gpu)
 		return
 	}
-	// no --gpu: report every GPU that has a lock file
+	for _, g := range knownGPUs() {
+		printStatus(g)
+	}
+}
+
+// knownGPUs returns GPU IDs from ~/.gputex/gpus (one per line, # comments ok),
+// falling back to lock-file discovery, then "default".
+func knownGPUs() []string {
+	if b, err := os.ReadFile(filepath.Join(dir(), "gpus")); err == nil {
+		var gpus []string
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				gpus = append(gpus, line)
+			}
+		}
+		if len(gpus) > 0 {
+			return gpus
+		}
+	}
 	ents, _ := os.ReadDir(dir())
 	var gpus []string
 	for _, e := range ents {
@@ -223,11 +244,9 @@ func statusCmd(args []string) {
 		}
 	}
 	if len(gpus) == 0 {
-		gpus = []string{"default"}
+		return []string{"default"}
 	}
-	for _, g := range gpus {
-		printStatus(g)
-	}
+	return gpus
 }
 
 func printStatus(gpu string) {
