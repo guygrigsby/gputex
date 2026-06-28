@@ -16,11 +16,15 @@ var ErrBusy = errors.New("busy")
 
 // Holder records who holds a GPU lock (for status and for preemption).
 type Holder struct {
-	Label   string `json:"label"`
-	PID     int    `json:"pid"`
-	Host    string `json:"host"`
-	Started string `json:"started"`
-	Cmd     string `json:"cmd"`
+	Label string `json:"label"`
+	// Framework is the stack the job runs on (e.g. "lmkit-go", "pytorch"), set by
+	// gputex run --framework. Empty if unset. Surfaced by the metrics exporter so
+	// every GPU job is labelled by framework on the workers dashboard.
+	Framework string `json:"framework,omitempty"`
+	PID       int    `json:"pid"`
+	Host      string `json:"host"`
+	Started   string `json:"started"`
+	Cmd       string `json:"cmd"`
 	// Preemptible marks a lowest-priority shared holder (gputex run --low, e.g.
 	// ComfyUI / llama-swap). Several may share the card at once; any normal
 	// (exclusive) job evicts them all on acquire, so the card frees for training

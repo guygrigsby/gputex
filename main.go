@@ -19,7 +19,7 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `gputex — single-GPU mutex
-  gputex run    [--gpu ID] [--wait S | --queue | --preempt | --low] "<label>" -- <cmd...>   acquire, run, release
+  gputex run    [--gpu ID] [--framework NAME] [--wait S | --queue | --preempt | --low] "<label>" -- <cmd...>   acquire, run, release
   gputex status [--gpu ID]   omit --gpu to list all GPUs in ~/.gputex/gpus (one per line)
                              free / busy + holder
   --wait S   poll up to S seconds, then exit 75 if still busy
@@ -47,6 +47,7 @@ func main() {
 
 func runCmd(args []string) {
 	gpu, wait, queue, preemptF, low, label, cmd := "default", 0, false, false, false, "", []string(nil)
+	framework := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -58,6 +59,11 @@ func runCmd(args []string) {
 			gpu = arg(args, i)
 		case strings.HasPrefix(a, "--gpu="):
 			gpu = a[len("--gpu="):]
+		case a == "--framework":
+			i++
+			framework = arg(args, i)
+		case strings.HasPrefix(a, "--framework="):
+			framework = a[len("--framework="):]
 		case a == "--wait":
 			i++
 			wait, _ = strconv.Atoi(arg(args, i))
@@ -82,7 +88,7 @@ func runCmd(args []string) {
 
 	host, _ := os.Hostname()
 	_ = addHolder(gpu, Holder{
-		Label: label, PID: os.Getpid(), Host: host,
+		Label: label, Framework: framework, PID: os.Getpid(), Host: host,
 		Started: time.Now().Format(time.RFC3339), Cmd: strings.Join(cmd, " "),
 		Preemptible: low,
 	})
