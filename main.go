@@ -96,6 +96,7 @@ func runCmd(args []string) {
 
 	c := exec.Command(cmd[0], cmd[1:]...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	c.Env = childEnv() // inject /etc/gputex/env (e.g. MLFLOW_TRACKING_URI) into the job
 	if err := c.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "gputex: start:", err)
 		os.Exit(1)

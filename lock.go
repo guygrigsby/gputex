@@ -42,8 +42,8 @@ func dir() string {
 	return d
 }
 
-func lockPath(gpu string) string    { return filepath.Join(dir(), gpu+".lock") }
-func holdersDir(gpu string) string  { return filepath.Join(dir(), gpu+".holders") }
+func lockPath(gpu string) string   { return filepath.Join(dir(), gpu+".lock") }
+func holdersDir(gpu string) string { return filepath.Join(dir(), gpu+".holders") }
 func holderFile(gpu string, pid int) string {
 	return filepath.Join(holdersDir(gpu), strconv.Itoa(pid)+".json")
 }
