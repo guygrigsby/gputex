@@ -1,7 +1,7 @@
 # The gputex lock protocol
 
 This file is the contract. gputex is one client of it; any program may
-speak the protocol directly (rikki's stdlib `gpu` module does). A change
+speak the protocol directly (nevla's stdlib `gpu` module does). A change
 here is a breaking change for every client, not an implementation detail.
 
 ## Directory
@@ -57,7 +57,7 @@ Schema (all fields strings unless noted):
 
 - `label` — required; human-readable job name.
 - `framework` — optional; the stack the job runs on (`pytorch`,
-  `lmkit-go`, `rikki`). Surfaced by the metrics exporter.
+  `lmkit-go`, `nevla`). Surfaced by the metrics exporter.
 - `pid` (int), `host` — required; who to signal, and a guard against
   signalling across hosts. Preemption refuses when `host` isn't ours.
 - `started` — RFC 3339.
@@ -78,4 +78,4 @@ getting `MLFLOW_TRACKING_URI`.
 ## Known clients
 
 - gputex (this repo) — CLI wrapper, preemption, status.
-- rikki stdlib `gpu` module — in-language acquire for `.rk` programs.
+- nevla stdlib `gpu` module — in-language acquire for `.nv` programs (the language formerly named rikki).
