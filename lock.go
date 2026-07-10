@@ -33,11 +33,15 @@ type Holder struct {
 }
 
 func dir() string {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		h = "/tmp"
+	// GPUTEX_DIR overrides for tests and sandboxes (docs/PROTOCOL.md)
+	d := os.Getenv("GPUTEX_DIR")
+	if d == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			h = "/tmp"
+		}
+		d = filepath.Join(h, ".gputex")
 	}
-	d := filepath.Join(h, ".gputex")
 	_ = os.MkdirAll(d, 0o755)
 	return d
 }
