@@ -89,7 +89,8 @@ func runCmd(args []string) {
 	host, _ := os.Hostname()
 	_ = addHolder(gpu, Holder{
 		Label: label, Framework: framework, PID: os.Getpid(), Host: host,
-		Started: time.Now().Format(time.RFC3339), Cmd: strings.Join(cmd, " "),
+		StartTime: procStartTime(os.Getpid()),
+		Started:   time.Now().Format(time.RFC3339), Cmd: strings.Join(cmd, " "),
 		Preemptible: low,
 	})
 	defer removeHolder(gpu, os.Getpid())

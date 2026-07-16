@@ -108,6 +108,17 @@ func TestListHoldersPrunesDead(t *testing.T) {
 	}
 }
 
+func TestListHoldersPrunesReusedPID(t *testing.T) {
+	isolate(t)
+	gpu := "test"
+	// pid reuse: the recorded pid is alive but belongs to a different process
+	// (start time mismatch) — must be pruned, not treated as the holder
+	_ = addHolder(gpu, Holder{Label: "ghost", PID: os.Getpid(), StartTime: 12345})
+	if h := listHolders(gpu); len(h) != 0 {
+		t.Fatalf("want reused-pid holder pruned, got %+v", h)
+	}
+}
+
 func TestStatusClearsStaleHolder(t *testing.T) {
 	isolate(t)
 	gpu := "test"

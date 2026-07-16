@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -21,8 +22,13 @@ type Holder struct {
 	// gputex run --framework. Empty if unset. Surfaced by the metrics exporter so
 	// every GPU job is labelled by framework on the workers dashboard.
 	Framework string `json:"framework,omitempty"`
-	PID       int    `json:"pid"`
-	Host      string `json:"host"`
+	PID  int    `json:"pid"`
+	Host string `json:"host"`
+	// StartTime is the process start time (/proc/<pid>/stat field 22, clock
+	// ticks since boot). Guards liveness checks against pid reuse: a recycled
+	// pid passes kill(pid,0) but its start time won't match. 0 = unknown
+	// (non-Linux), which skips the check.
+	StartTime uint64 `json:"starttime,omitempty"`
 	Started   string `json:"started"`
 	Cmd       string `json:"cmd"`
 	// Preemptible marks a lowest-priority shared holder (gputex run --low, e.g.
@@ -127,13 +133,35 @@ func listHolders(gpu string) []Holder {
 			continue
 		}
 		var h Holder
-		if json.Unmarshal(b, &h) != nil || !alive(h.PID) {
+		if json.Unmarshal(b, &h) != nil || !alive(h.PID) ||
+			(h.StartTime != 0 && procStartTime(h.PID) != h.StartTime) {
 			_ = os.Remove(p)
 			continue
 		}
 		out = append(out, h)
 	}
 	return out
+}
+
+// procStartTime returns the process start time in clock ticks since boot
+// (/proc/<pid>/stat field 22), or 0 where that can't be read (non-Linux, or
+// the process is gone). comm (field 2) can contain spaces — parse after ')'.
+func procStartTime(pid int) uint64 {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return 0
+	}
+	fields := strings.Fields(s[i+1:])
+	if len(fields) < 20 { // starttime = field 22 overall = 20th after comm
+		return 0
+	}
+	n, _ := strconv.ParseUint(fields[19], 10, 64)
+	return n
 }
 
 // alive reports whether pid is a live process we could signal.
